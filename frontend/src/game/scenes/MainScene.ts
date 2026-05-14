@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import mapData from "../maps/map.json";
 
 export default class MainScene extends Phaser.Scene {
     player!: Phaser.Physics.Arcade.Sprite;
@@ -9,36 +10,65 @@ export default class MainScene extends Phaser.Scene {
     }
 
     preload() {
-        this.load.tilemapTiledJSON("map", "src/game/maps/map.json");
-        this.load.image("tiles", "src/game/assets/map.png");
-
-        this.load.image("player", "src/game/assets/player.png");
+        this.load.image("map", "src/game/assets/map.png");
+        this.load.spritesheet("player", "src/game/assets/player.png", {
+            frameWidth: 16,
+            frameHeight: 32,
+        });
     }
 
     create() {
+        const MAP_W = 800;
+        const MAP_H = 600;
+        const COLS = 30;
+        const ROWS = 20;
+        const tileW = MAP_W / COLS;
+        const tileH = MAP_H / ROWS;
+
         // MAP
-        const map = this.make.tilemap({ key: "map" });
+        this.add.image(0, 0, "map").setOrigin(0, 0).setDisplaySize(MAP_W, MAP_H);
 
-        const tileset = map.addTilesetImage(
-            "City",
-            "tiles"
-        );
+        // COLLISION WALLS — build invisible bodies from the Grass layer (tile 1 = wall)
+        const gfx = this.add.graphics();
+        gfx.fillStyle(0xffffff);
+        gfx.fillRect(0, 0, 1, 1);
+        gfx.generateTexture("pixel", 1, 1);
+        gfx.destroy();
 
-        const groundLayer = map.createLayer(
-            "Ground",
-            tileset!,
-            0,
-            0
-        );
+        const walls = this.physics.add.staticGroup();
+        const grassLayer = (mapData.layers as { name: string; data: number[] }[])
+            .find(l => l.name === "Grass");
+
+        if (grassLayer) {
+            grassLayer.data.forEach((tile, index) => {
+                if (tile !== 1) return;
+                const col = index % COLS;
+                const row = Math.floor(index / COLS);
+                const x = col * tileW + tileW / 2;
+                const y = row * tileH + tileH / 2;
+                (walls.create(x, y, "pixel") as Phaser.Physics.Arcade.Sprite)
+                    .setVisible(false)
+                    .setDisplaySize(tileW, tileH)
+                    .refreshBody();
+            });
+        }
 
         // PLAYER
-        this.player = this.physics.add.sprite(100, 100, "player");
+        this.player = this.physics.add.sprite(240, 240, "player");
+        this.player.setScale(1.8);
+        this.player.setFrame(0);
+        this.player.setCollideWorldBounds(true);
+
+        // COLLIDER
+        this.physics.add.collider(this.player, walls);
 
         // CAMERA
+        this.physics.world.setBounds(0, 0, MAP_W, MAP_H);
+        this.cameras.main.setBounds(0, 0, MAP_W, MAP_H);
         this.cameras.main.startFollow(this.player);
 
         // INPUT
-        this.cursors = this.input.keyboard.createCursorKeys();
+        this.cursors = this.input.keyboard!.createCursorKeys();
     }
 
     update() {
@@ -49,15 +79,12 @@ export default class MainScene extends Phaser.Scene {
         if (this.cursors.left.isDown) {
             this.player.setVelocityX(-speed);
         }
-
         if (this.cursors.right.isDown) {
             this.player.setVelocityX(speed);
         }
-
         if (this.cursors.up.isDown) {
             this.player.setVelocityY(-speed);
         }
-
         if (this.cursors.down.isDown) {
             this.player.setVelocityY(speed);
         }
