@@ -6,6 +6,7 @@ type EnemyState = "sleeping" | "chasing";
 export default class MainScene extends Phaser.Scene {
     player!: Phaser.Physics.Arcade.Sprite;
     enemy!: Phaser.Physics.Arcade.Sprite;
+    attackZone!: Phaser.Physics.Arcade.Image;
     enemyState: EnemyState = "sleeping";
     cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
     wasd!: { up: Phaser.Input.Keyboard.Key; down: Phaser.Input.Keyboard.Key; left: Phaser.Input.Keyboard.Key; right: Phaser.Input.Keyboard.Key };
@@ -16,26 +17,48 @@ export default class MainScene extends Phaser.Scene {
     private readonly WAKE_DISTANCE = 120;
     private readonly ENEMY_SPEED   = 60;
 
+    // Health system — 6 half-hearts = 3 full hearts
+    private playerHP = 6;
+    private isGameOver = false;
+    private invincible = false;
+    private hearts: Phaser.GameObjects.Image[] = [];
+    private heartsBg: Phaser.GameObjects.Image[] = [];
+
+    private enemyHP = 3;
+
     constructor() {
         super("MainScene");
     }
 
+    init() {
+        this.playerHP    = 6;
+        this.isGameOver  = false;
+        this.invincible  = false;
+        this.isAttacking = false;
+        this.facingDir   = "down";
+        this.enemyState  = "sleeping";
+        this.hearts      = [];
+        this.heartsBg    = [];
+        this.enemyHP     = 3;
+    }
+
     preload() {
         this.load.image("map", "src/game/assets/map.png");
-        // Walk — 17 cols × 8 rows (16×32 per frame)
         this.load.spritesheet("player", "src/game/assets/player.png", {
             frameWidth: 16,
             frameHeight: 32,
         });
-        // Attack — frames de 32×32 (chaque pose = 2 colonnes de 16px assemblées)
         this.load.spritesheet("player-atk", "src/game/assets/player.png", {
             frameWidth: 32,
             frameHeight: 32,
         });
-        // Enemy — 4 cols × 4 rows (32×32 per frame)
         this.load.spritesheet("enemy", "src/game/assets/enemy.png", {
             frameWidth: 32,
             frameHeight: 32,
+        });
+        this.load.spritesheet("objects", "src/game/assets/objects.png", {
+            frameWidth: 16,
+            frameHeight: 16,
         });
     }
 
@@ -104,8 +127,6 @@ export default class MainScene extends Phaser.Scene {
         });
 
         // ATTACK ANIMATIONS — "player-atk" texture, frameWidth 32px
-        // Math.floor(272/32) = 8 cols per row
-        // 8 × 16px frames = 4 × 32px frames per direction (rows 4-7)
         const attackDirs: { key: string; row: number }[] = [
             { key: "down",  row: 4 },
             { key: "up",    row: 5 },
@@ -113,7 +134,7 @@ export default class MainScene extends Phaser.Scene {
             { key: "left",  row: 7 },
         ];
         attackDirs.forEach(({ key, row }) => {
-            const start = row * 8; // 8 cols per row at 32px
+            const start = row * 8;
             this.anims.create({
                 key: `attack-${key}`,
                 frames: this.anims.generateFrameNumbers("player-atk", {
@@ -134,8 +155,7 @@ export default class MainScene extends Phaser.Scene {
             }
         });
 
-        // ENEMY ANIMATIONS — 6 cols × 4 rows (frameWidth=32)
-        // cols 0-3 = walk loop, col 4 = sleep
+        // ENEMY ANIMATIONS
         this.anims.create({
             key: "enemy-sleep",
             frames: this.anims.generateFrameNumbers("enemy", { frames: [4] }),
@@ -158,13 +178,60 @@ export default class MainScene extends Phaser.Scene {
         enemyBody.pushable = false;
         this.enemy.anims.play("enemy-sleep");
 
-        // COLLIDERS — order matters: player-walls must be last so it corrects
-        // any position the enemy may have pushed the player into during the same frame
+        // ATTACK ZONE — separate invisible body used only for attack hit detection
+        this.attackZone = this.physics.add.image(0, 0, "pixel");
+        this.attackZone.setVisible(false);
+        this.attackZone.setActive(false);
+        const attackBody = this.attackZone.body as Phaser.Physics.Arcade.Body;
+        attackBody.setEnable(false);
+
+        // COLLIDERS — player-walls last so it corrects any position pushed by enemy
         this.physics.add.collider(this.enemy, walls);
         this.physics.add.collider(this.player, this.enemy, () => {
             (this.enemy.body as Phaser.Physics.Arcade.Body).setVelocity(0, 0);
+            this.damagePlayer();
         });
         this.physics.add.collider(this.player, walls);
+
+        // Attack zone overlaps with enemy — does not affect player body
+        this.physics.add.overlap(this.attackZone, this.enemy, () => {
+            if (!this.enemy.active) return;
+            // Disable attack zone immediately so one swing counts as one hit
+            (this.attackZone.body as Phaser.Physics.Arcade.Body).setEnable(false);
+
+            this.enemyHP -= 1;
+
+            // Knockback
+            const dir = new Phaser.Math.Vector2(
+                this.enemy.x - this.player.x,
+                this.enemy.y - this.player.y
+            ).normalize();
+            (this.enemy.body as Phaser.Physics.Arcade.Body).setVelocity(dir.x * 200, dir.y * 200);
+
+            if (this.enemyHP <= 0) {
+                // Flash then disappear
+                this.tweens.add({
+                    targets: this.enemy,
+                    alpha: 0,
+                    duration: 60,
+                    repeat: 3,
+                    yoyo: true,
+                    onComplete: () => {
+                        this.enemy.setActive(false).setVisible(false);
+                        (this.enemy.body as Phaser.Physics.Arcade.Body).setEnable(false);
+                    },
+                });
+            } else {
+                // Brief flash on hit
+                this.tweens.add({
+                    targets: this.enemy,
+                    alpha: 0.3,
+                    duration: 60,
+                    yoyo: true,
+                    onComplete: () => this.enemy.setAlpha(1),
+                });
+            }
+        });
 
         // CAMERA
         this.physics.world.setBounds(0, 0, MAP_W, MAP_H);
@@ -181,9 +248,33 @@ export default class MainScene extends Phaser.Scene {
             left:  this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.A),
             right: this.input.keyboard!.addKey(Phaser.Input.Keyboard.KeyCodes.D),
         };
+
+        // HUD — 3 hearts fixed to camera top-left (frame 1 = full red heart)
+        const HUD_X = 20;
+        const HUD_Y = 20;
+        const HEART_SPACING = 36;
+        for (let i = 0; i < 3; i++) {
+            const hx = HUD_X + i * HEART_SPACING;
+            // Background: darkened heart = empty slot
+            const bg = this.add.image(hx, HUD_Y, "objects", 1)
+                .setScrollFactor(0)
+                .setScale(2)
+                .setTint(0x333333)
+                .setDepth(100);
+            this.heartsBg.push(bg);
+            // Foreground: red heart, cropped to represent fill level
+            const fg = this.add.image(hx, HUD_Y, "objects", 1)
+                .setScrollFactor(0)
+                .setScale(2)
+                .setDepth(101);
+            this.hearts.push(fg);
+        }
+        this.updateHeartsHUD();
     }
 
     update() {
+        if (this.isGameOver) return;
+
         if (Phaser.Input.Keyboard.JustDown(this.spaceKey) && !this.isAttacking) {
             this.isAttacking = true;
             this.player.setVelocity(0);
@@ -223,17 +314,114 @@ export default class MainScene extends Phaser.Scene {
     }
 
     private resetHitbox() {
-        (this.player.body as Phaser.Physics.Arcade.Body).setSize(10, 19).setOffset(3, 8);
+        const body = this.attackZone.body as Phaser.Physics.Arcade.Body;
+        body.setEnable(false);
+        this.attackZone.setActive(false);
     }
 
     private setAttackHitbox() {
-        const body = this.player.body as Phaser.Physics.Arcade.Body;
+        const px = this.player.x;
+        const py = this.player.y;
+        const offset = 22;
+
+        let zx = px, zy = py;
         switch (this.facingDir) {
-            case "down":  body.setSize(10, 30).setOffset(3, 8);   break;
-            case "up":    body.setSize(10, 30).setOffset(3, -10); break;
-            case "right": body.setSize(22, 19).setOffset(3, 8);   break;
-            case "left":  body.setSize(22, 19).setOffset(-9, 8);  break;
+            case "down":  zy = py + offset; break;
+            case "up":    zy = py - offset; break;
+            case "right": zx = px + offset; break;
+            case "left":  zx = px - offset; break;
         }
+
+        this.attackZone.setPosition(zx, zy);
+        this.attackZone.setActive(true);
+        const body = this.attackZone.body as Phaser.Physics.Arcade.Body;
+        body.reset(zx, zy);
+        body.setSize(18, 18);
+        body.setEnable(true);
+    }
+
+    private damagePlayer() {
+        if (this.invincible || this.isGameOver) return;
+        this.playerHP = Math.max(0, this.playerHP - 1);
+        this.updateHeartsHUD();
+        if (this.playerHP <= 0) {
+            this.showGameOver();
+            return;
+        }
+        // Invincibility frames with flashing effect
+        this.invincible = true;
+        this.tweens.add({
+            targets: this.player,
+            alpha: 0.3,
+            duration: 80,
+            repeat: 5,
+            yoyo: true,
+            onComplete: () => {
+                this.player.setAlpha(1);
+                this.invincible = false;
+            },
+        });
+    }
+
+    private updateHeartsHUD() {
+        for (let i = 0; i < 3; i++) {
+            // How many half-hearts remain for this heart slot
+            const remaining = this.playerHP - i * 2;
+            const heart = this.hearts[i];
+            if (remaining >= 2) {
+                heart.setVisible(true).setCrop(0, 0, 16, 16);
+            } else if (remaining === 1) {
+                // Left half only = half heart
+                heart.setVisible(true).setCrop(0, 0, 8, 16);
+            } else {
+                heart.setVisible(false);
+            }
+        }
+    }
+
+    private showGameOver() {
+        this.isGameOver = true;
+        this.physics.pause();
+        this.player.setAlpha(0.4);
+
+        const cx = this.cameras.main.width / 2;
+        const cy = this.cameras.main.height / 2;
+
+        // Semi-transparent dark overlay
+        this.add.rectangle(cx, cy, this.cameras.main.width, this.cameras.main.height, 0x000000, 0.72)
+            .setScrollFactor(0)
+            .setDepth(200);
+
+        // GAME OVER title
+        this.add.text(cx, cy - 50, "GAME OVER", {
+            fontSize: "48px",
+            color: "#ff3333",
+            fontStyle: "bold",
+            stroke: "#000000",
+            strokeThickness: 6,
+        })
+            .setOrigin(0.5)
+            .setScrollFactor(0)
+            .setDepth(201);
+
+        // Restart button
+        const btnBg = this.add.rectangle(cx, cy + 40, 160, 48, 0xffffff)
+            .setScrollFactor(0)
+            .setDepth(201)
+            .setInteractive({ useHandCursor: true });
+
+        this.add.text(cx, cy + 40, "Restart", {
+            fontSize: "22px",
+            color: "#222222",
+            fontStyle: "bold",
+        })
+            .setOrigin(0.5)
+            .setScrollFactor(0)
+            .setDepth(202);
+
+        btnBg.on("pointerover", () => btnBg.setFillStyle(0xdddddd));
+        btnBg.on("pointerout",  () => btnBg.setFillStyle(0xffffff));
+        btnBg.on("pointerdown", () => this.scene.restart());
     }
 
     private updateEnemy() {
